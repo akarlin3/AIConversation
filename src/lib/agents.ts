@@ -12,8 +12,12 @@ export type { Agent };
  *
  * Three distinct model roles (do not conflate):
  *   - Gemini participant  → gemini-3.5-flash
- *   - Claude participant  → claude-sonnet-4-6   (Mode-A critic / Mode-B negotiator)
+ *   - Claude participant  → claude-sonnet-4-6
  *   - Judge               → claude-opus-4-8     (consensus convergence ruling)
+ *
+ * In critique mode either participant can answer or critique; the session's
+ * `starter` decides who answers first (the other critiques). In consensus both
+ * participants negotiate in parallel.
  */
 
 export const GEMINI_MODEL = "gemini-3.5-flash";
@@ -35,18 +39,26 @@ export const LENGTH_PRESETS: Record<ResponseLength, LengthPreset> = {
 };
 
 // ── System prompts (default, editable) ──────────────────────────────────────
-export const GEMINI_SYSTEM_PROMPT =
-  "You are Gemini in a structured dialogue. {length} In Critique mode, answer the " +
-  "prompt and, when Claude has critiqued you, address the critique honestly — concede, " +
-  "defend, or revise. In Consensus mode, work toward a genuinely shared answer with " +
-  "Claude: state your position, then converge where the evidence supports it without " +
-  "capitulating on substance. Produce only your next contribution.";
+// Critique prompts are role-based, not model-bound: either model can be the
+// answerer (the other becomes the critic), set per session via `starter`.
+// `{self}` / `{other}` are filled with the model display names at call time.
+export const CRITIQUE_ANSWERER_SYSTEM_PROMPT =
+  "You are {self} in a structured dialogue. {length} Answer the prompt directly and " +
+  "well. When {other} critiques your answer, address the critique honestly — concede, " +
+  "defend, or revise. Produce only your next contribution.";
 
-export const CLAUDE_CRITIC_SYSTEM_PROMPT =
-  "You are Claude, a rigorous non-sycophantic critic of Gemini's most recent response. " +
+export const CRITIQUE_CRITIC_SYSTEM_PROMPT =
+  "You are {self}, a rigorous non-sycophantic critic of {other}'s most recent response. " +
   "{length} Evaluate correctness, reasoning, completeness, and hidden assumptions. Name " +
-  "concrete weaknesses and what would improve them. Do not rewrite Gemini's answer — " +
+  "concrete weaknesses and what would improve them. Do not rewrite {other}'s answer — " +
   "critique it. Produce only your critique.";
+
+// Consensus prompts — one per model (both negotiate in parallel).
+export const GEMINI_NEGOTIATOR_SYSTEM_PROMPT =
+  "You are Gemini negotiating a consensus answer with Claude. {length} Give your own best " +
+  "answer; in later rounds, integrate Claude's valid points and flag remaining " +
+  "disagreements explicitly. Converge on substance, not by deferring. Produce only your " +
+  "next contribution.";
 
 export const CLAUDE_NEGOTIATOR_SYSTEM_PROMPT =
   "You are Claude negotiating a consensus answer with Gemini. {length} Give your own best " +
@@ -69,39 +81,60 @@ const ROLE_LABEL: Record<Role, string> = {
   judge: "[JUDGE]",
 };
 
+/** Human-readable model name used to fill {self}/{other} in the critique prompts. */
+const AGENT_LABEL: Record<Agent, string> = { gemini: "Gemini", claude: "Claude" };
+
+export function otherAgent(agent: Agent): Agent {
+  return agent === "gemini" ? "claude" : "gemini";
+}
+
+/** In critique mode the `starter` answers; the other participant critiques. */
+export function critiqueRole(agent: Agent, starter: Agent): "answerer" | "critic" {
+  return agent === starter ? "answerer" : "critic";
+}
+
 /** Render the ordered turns into one labeled transcript block. */
 export function flattenTranscript(turns: Turn[]): string {
   return turns.map((t) => `${ROLE_LABEL[t.role]}\n${t.content}`).join("\n\n");
 }
 
-function trailingInstruction(agent: Agent, mode: Mode): string {
+function trailingInstruction(agent: Agent, mode: Mode, starter: Agent): string {
   if (mode === "critique") {
-    return agent === "gemini"
+    return critiqueRole(agent, starter) === "answerer"
       ? "Produce your next response."
-      : "Produce your critique of Gemini's most recent response.";
+      : `Produce your critique of ${AGENT_LABEL[otherAgent(agent)]}'s most recent response.`;
   }
   return "Produce your next contribution toward a shared answer.";
 }
 
-/** Pick the participant system prompt for (agent, mode) and inject the length instruction. */
-function systemPromptFor(agent: Agent, mode: Mode, length: ResponseLength): string {
+/** Pick the participant system prompt for (agent, mode, starter) and inject the length instruction. */
+function systemPromptFor(agent: Agent, mode: Mode, length: ResponseLength, starter: Agent): string {
+  const lengthInstruction = LENGTH_PRESETS[length].instruction;
+  if (mode === "consensus") {
+    const base =
+      agent === "gemini" ? GEMINI_NEGOTIATOR_SYSTEM_PROMPT : CLAUDE_NEGOTIATOR_SYSTEM_PROMPT;
+    return base.replace("{length}", lengthInstruction);
+  }
   const base =
-    agent === "gemini"
-      ? GEMINI_SYSTEM_PROMPT
-      : mode === "critique"
-        ? CLAUDE_CRITIC_SYSTEM_PROMPT
-        : CLAUDE_NEGOTIATOR_SYSTEM_PROMPT;
-  return base.replace("{length}", LENGTH_PRESETS[length].instruction);
+    critiqueRole(agent, starter) === "answerer"
+      ? CRITIQUE_ANSWERER_SYSTEM_PROMPT
+      : CRITIQUE_CRITIC_SYSTEM_PROMPT;
+  return base
+    .replace("{self}", AGENT_LABEL[agent])
+    .replace(/\{other\}/g, AGENT_LABEL[otherAgent(agent)])
+    .replace("{length}", lengthInstruction);
 }
 
 /** Flattened transcript + the agent's trailing instruction = the single user message. */
-function buildUserMessage(turns: Turn[], agent: Agent, mode: Mode): string {
-  return `${flattenTranscript(turns)}\n\n${trailingInstruction(agent, mode)}`;
+function buildUserMessage(turns: Turn[], agent: Agent, mode: Mode, starter: Agent): string {
+  return `${flattenTranscript(turns)}\n\n${trailingInstruction(agent, mode, starter)}`;
 }
 
 export interface TurnOptions {
   mode: Mode;
   responseLength: ResponseLength;
+  /** Critique mode: which participant answers first. Defaults to "gemini". */
+  starter: Agent;
 }
 
 async function runGemini(turns: Turn[], opts: TurnOptions): Promise<string> {
@@ -111,9 +144,9 @@ async function runGemini(turns: Turn[], opts: TurnOptions): Promise<string> {
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
-    contents: buildUserMessage(turns, "gemini", opts.mode),
+    contents: buildUserMessage(turns, "gemini", opts.mode, opts.starter),
     config: {
-      systemInstruction: systemPromptFor("gemini", opts.mode, opts.responseLength),
+      systemInstruction: systemPromptFor("gemini", opts.mode, opts.responseLength, opts.starter),
       maxOutputTokens: LENGTH_PRESETS[opts.responseLength].maxTokens,
       // Disable thinking so maxOutputTokens bounds the visible answer, not silent reasoning.
       thinkingConfig: { thinkingBudget: 0 },
@@ -135,8 +168,8 @@ async function runClaudeParticipant(turns: Turn[], opts: TurnOptions): Promise<s
     max_tokens: LENGTH_PRESETS[opts.responseLength].maxTokens,
     // Thinking off: the length cap then bounds the visible response directly.
     thinking: { type: "disabled" },
-    system: systemPromptFor("claude", opts.mode, opts.responseLength),
-    messages: [{ role: "user", content: buildUserMessage(turns, "claude", opts.mode) }],
+    system: systemPromptFor("claude", opts.mode, opts.responseLength, opts.starter),
+    messages: [{ role: "user", content: buildUserMessage(turns, "claude", opts.mode, opts.starter) }],
   });
 
   const text = textOf(response);

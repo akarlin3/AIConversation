@@ -27,9 +27,19 @@ type Phase =
   | "converged"
   | "maxrounds";
 
-const CRITIQUE_ROUND: Agent[] = ["gemini", "claude"];
 const DEFAULT_MAX_ROUNDS = 5;
 const MAX_ROUNDS_LIMIT = 20;
+
+const AGENT_LABEL: Record<Agent, string> = { gemini: "Gemini", claude: "Claude" };
+
+function otherAgent(agent: Agent): Agent {
+  return agent === "gemini" ? "claude" : "gemini";
+}
+
+/** One critique cycle: the starter answers first, then the other critiques. */
+function critiqueOrder(starter: Agent): Agent[] {
+  return [starter, otherAgent(starter)];
+}
 
 const LENGTHS: { value: ResponseLength; label: string }[] = [
   { value: "brief", label: "Brief" },
@@ -93,12 +103,14 @@ export function DebateApp() {
   const [formMode, setFormMode] = useState<Mode>("critique");
   const [formLength, setFormLength] = useState<ResponseLength>("standard");
   const [formMaxRounds, setFormMaxRounds] = useState(DEFAULT_MAX_ROUNDS);
+  const [formStarter, setFormStarter] = useState<Agent>("gemini");
 
   // Active session
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("critique");
   const [responseLength, setResponseLength] = useState<ResponseLength>("standard");
   const [maxRounds, setMaxRounds] = useState<number | null>(null);
+  const [starter, setStarter] = useState<Agent>("gemini");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [currentRound, setCurrentRound] = useState(0);
@@ -298,8 +310,15 @@ export function DebateApp() {
     setMode(formMode);
     setResponseLength(formLength);
     setMaxRounds(formMode === "consensus" ? formMaxRounds : null);
+    setStarter(formStarter);
     setCurrentRound(formMode === "consensus" ? 1 : 0);
-    setPhase(formMode === "consensus" ? "roundRunning" : "geminiThinking");
+    setPhase(
+      formMode === "consensus"
+        ? "roundRunning"
+        : formStarter === "gemini"
+          ? "geminiThinking"
+          : "claudeThinking",
+    );
 
     try {
       const sid = await createSession({
@@ -307,12 +326,13 @@ export function DebateApp() {
         mode: formMode,
         responseLength: formLength,
         maxRounds: formMode === "consensus" ? formMaxRounds : null,
+        starter: formStarter,
       });
       setSessionId(sid);
       setPrompt("");
       await refreshSessions();
       if (formMode === "consensus") await runConsensus(sid, formMaxRounds);
-      else await runCritique(CRITIQUE_ROUND, sid);
+      else await runCritique(critiqueOrder(formStarter), sid);
     } catch (err) {
       setError(messageFrom(err));
       applyTurns([]);
@@ -323,7 +343,7 @@ export function DebateApp() {
 
   async function handleContinue() {
     if (!sessionId || busy) return;
-    await runCritique(CRITIQUE_ROUND, sessionId);
+    await runCritique(critiqueOrder(starter), sessionId);
   }
 
   async function handleStop() {
@@ -373,6 +393,7 @@ export function DebateApp() {
       setMode(s.mode);
       setResponseLength(s.responseLength);
       setMaxRounds(s.maxRounds);
+      setStarter(s.starter);
       applyTurns(s.turns);
       setCurrentRound(nextConsensusRound(s.turns));
       setLoadingSession(false);
@@ -446,6 +467,13 @@ export function DebateApp() {
   }
 
   const verdict = lastVerdict(turns);
+  const critic = otherAgent(starter);
+
+  // Critique verb for a participant: the starter answers, the other critiques.
+  function critiqueVerb(agent: Agent): string | undefined {
+    if (mode !== "critique") return undefined;
+    return agent === starter ? "is answering" : "is critiquing";
+  }
 
   return (
     <div className="flex min-h-screen w-full">
@@ -469,7 +497,7 @@ export function DebateApp() {
                   ? "Gemini and Claude debate — you choose how."
                   : mode === "consensus"
                     ? "Consensus · Gemini and Claude negotiate, a judge decides convergence"
-                    : "Critique · Gemini answers, Claude critiques"}
+                    : `Critique · ${AGENT_LABEL[starter]} answers, ${AGENT_LABEL[critic]} critiques`}
               </p>
             </div>
             {!showForm && (
@@ -496,6 +524,8 @@ export function DebateApp() {
               setLength={setFormLength}
               maxRounds={formMaxRounds}
               setMaxRounds={setFormMaxRounds}
+              starter={formStarter}
+              setStarter={setFormStarter}
               busy={busy}
               promptTooLong={promptTooLong}
               error={error}
@@ -504,14 +534,14 @@ export function DebateApp() {
           ) : (
             <main className="flex flex-1 flex-col gap-4 pb-32">
               {turns.map((t) => (
-                <TranscriptCard key={t.id} turn={t} mode={mode} />
+                <TranscriptCard key={t.id} turn={t} mode={mode} starter={starter} />
               ))}
 
               {phase === "geminiThinking" && !error && (
-                <ThinkingIndicator role="gemini" verb={mode === "critique" ? "is answering" : undefined} />
+                <ThinkingIndicator role="gemini" verb={critiqueVerb("gemini")} />
               )}
               {phase === "claudeThinking" && !error && (
-                <ThinkingIndicator role="claude" verb="is critiquing" />
+                <ThinkingIndicator role="claude" verb={critiqueVerb("claude")} />
               )}
               {phase === "roundRunning" && !error && (
                 <div className="flex flex-col gap-3">
@@ -557,7 +587,8 @@ export function DebateApp() {
                     Stop
                   </button>
                   <span className="font-mono text-xs text-muted">
-                    Continue → Gemini answers Claude, then Claude critiques again.
+                    Continue → {AGENT_LABEL[starter]} answers {AGENT_LABEL[critic]}, then{" "}
+                    {AGENT_LABEL[critic]} critiques again.
                   </span>
                 </div>
               )}
@@ -675,6 +706,8 @@ function CreationForm({
   setLength,
   maxRounds,
   setMaxRounds,
+  starter,
+  setStarter,
   busy,
   promptTooLong,
   error,
@@ -688,6 +721,8 @@ function CreationForm({
   setLength: (l: ResponseLength) => void;
   maxRounds: number;
   setMaxRounds: (n: number) => void;
+  starter: Agent;
+  setStarter: (a: Agent) => void;
   busy: boolean;
   promptTooLong: boolean;
   error: string | null;
@@ -711,7 +746,7 @@ function CreationForm({
             </span>
             <span className="mt-1 block font-mono text-[11px] leading-snug text-muted">
               {m === "critique"
-                ? "Gemini answers, Claude critiques. You gate each round."
+                ? "One model answers, the other critiques. You gate each round."
                 : "Both answer in parallel, then revise toward a judged consensus."}
             </span>
           </button>
@@ -744,6 +779,28 @@ function CreationForm({
           <span className="font-mono text-[10px] uppercase tracking-wider text-muted">Length</span>
           <LengthControl value={length} disabled={busy} onChange={setLength} />
         </div>
+        {mode === "critique" && (
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted">
+              Answers first
+            </span>
+            <div className="flex items-center gap-1 rounded-md bg-card p-0.5 ring-1 ring-border">
+              {(["gemini", "claude"] as Agent[]).map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  onClick={() => setStarter(a)}
+                  disabled={busy}
+                  className={`rounded px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                    starter === a ? "bg-foreground text-background" : "text-muted hover:text-foreground"
+                  }`}
+                >
+                  {AGENT_LABEL[a]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {mode === "consensus" && (
           <label className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-muted">
             Max rounds

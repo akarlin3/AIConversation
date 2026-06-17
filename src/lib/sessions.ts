@@ -1,6 +1,7 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getDb } from "./firebaseAdmin";
 import type {
+  Agent,
   JudgeVerdict,
   Mode,
   ResponseLength,
@@ -29,6 +30,7 @@ function toSessionMeta(id: string, data: SessionDoc): SessionMeta {
     mode: data.mode,
     responseLength: data.responseLength,
     maxRounds: data.maxRounds ?? null,
+    starter: data.starter ?? "gemini",
     status: data.status,
     createdAt: tsToIso(data.createdAt),
     updatedAt: tsToIso(data.updatedAt),
@@ -54,6 +56,8 @@ export interface CreateSessionInput {
   mode: Mode;
   responseLength: ResponseLength;
   maxRounds: number | null;
+  /** Critique mode: which participant answers first. Defaults to "gemini". */
+  starter: Agent;
   title?: string;
 }
 
@@ -74,6 +78,7 @@ export async function createSession(input: CreateSessionInput): Promise<string> 
     mode: input.mode,
     responseLength: input.responseLength,
     maxRounds: input.mode === "consensus" ? input.maxRounds : null,
+    starter: input.starter,
     status: "active" satisfies SessionStatus,
     createdAt: now,
     updatedAt: now,
