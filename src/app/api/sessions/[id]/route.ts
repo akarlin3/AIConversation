@@ -1,14 +1,15 @@
 import type { NextRequest } from "next/server";
-import { deleteSession, getSession, updateSession } from "@/lib/sessions";
+import { deleteSession, getSession, updateSession, type SessionUpdates } from "@/lib/sessions";
 import { jsonError, serverError } from "@/lib/http";
-import type { SessionStatus } from "@/lib/types";
+import type { ResponseLength, SessionStatus } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Params = { params: Promise<{ id: string }> };
 
-const VALID_STATUSES: readonly SessionStatus[] = ["active", "stopped"];
+const VALID_STATUSES: readonly SessionStatus[] = ["active", "stopped", "converged", "maxrounds"];
+const VALID_LENGTHS: readonly ResponseLength[] = ["brief", "standard", "detailed"];
 
 /** GET /api/sessions/[id] — session meta + all turns ordered by index. */
 export async function GET(_request: NextRequest, { params }: Params): Promise<Response> {
@@ -22,7 +23,7 @@ export async function GET(_request: NextRequest, { params }: Params): Promise<Re
   }
 }
 
-/** PATCH /api/sessions/[id] — rename and/or set status. */
+/** PATCH /api/sessions/[id] — rename / set status / set responseLength. */
 export async function PATCH(request: NextRequest, { params }: Params): Promise<Response> {
   const { id } = await params;
 
@@ -33,8 +34,12 @@ export async function PATCH(request: NextRequest, { params }: Params): Promise<R
     return jsonError("Invalid JSON body.", 400);
   }
 
-  const { title, status } = (body ?? {}) as { title?: unknown; status?: unknown };
-  const updates: { title?: string; status?: SessionStatus } = {};
+  const { title, status, responseLength } = (body ?? {}) as {
+    title?: unknown;
+    status?: unknown;
+    responseLength?: unknown;
+  };
+  const updates: SessionUpdates = {};
 
   if (title !== undefined) {
     if (typeof title !== "string" || title.trim().length === 0) {
@@ -44,12 +49,22 @@ export async function PATCH(request: NextRequest, { params }: Params): Promise<R
   }
   if (status !== undefined) {
     if (typeof status !== "string" || !VALID_STATUSES.includes(status as SessionStatus)) {
-      return jsonError("`status` must be 'active' or 'stopped'.", 400);
+      return jsonError("`status` must be 'active', 'stopped', 'converged', or 'maxrounds'.", 400);
     }
     updates.status = status as SessionStatus;
   }
-  if (updates.title === undefined && updates.status === undefined) {
-    return jsonError("Provide at least one of `title` or `status`.", 400);
+  if (responseLength !== undefined) {
+    if (typeof responseLength !== "string" || !VALID_LENGTHS.includes(responseLength as ResponseLength)) {
+      return jsonError("`responseLength` must be 'brief', 'standard', or 'detailed'.", 400);
+    }
+    updates.responseLength = responseLength as ResponseLength;
+  }
+  if (
+    updates.title === undefined &&
+    updates.status === undefined &&
+    updates.responseLength === undefined
+  ) {
+    return jsonError("Provide at least one of `title`, `status`, or `responseLength`.", 400);
   }
 
   try {

@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
 import { type Agent, modelIdFor, runAgent } from "@/lib/agents";
-import { appendTurn, getOrderedTurns } from "@/lib/sessions";
+import { appendTurn, getSession } from "@/lib/sessions";
 import { jsonError, serverError } from "@/lib/http";
+import type { Turn } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,8 +11,16 @@ const AGENTS: readonly Agent[] = ["gemini", "claude"];
 
 /**
  * POST /api/turn — body { sessionId, agent: 'gemini' | 'claude' }.
- * Reads the ordered transcript, calls the chosen model, appends the new turn,
- * bumps updatedAt, and returns the created turn.
+ *
+ * Round derivation: a new turn's round = (count of that agent's existing turns) + 1.
+ * That holds for both modes — critique alternates gemini→claude within a round;
+ * consensus runs gemini and claude in parallel within the same round.
+ *
+ * Context:
+ *   - critique           → the full ordered transcript.
+ *   - consensus          → only turns from earlier rounds (round < newRound). This
+ *     enforces round-1 independence (each sees just the user prompt) and, in later
+ *     rounds, prevents either participant from seeing the other's same-round answer.
  */
 export async function POST(request: NextRequest): Promise<Response> {
   let body: unknown;
@@ -31,29 +40,46 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   const chosen = agent as Agent;
 
-  // 1. Read the full ordered transcript.
-  let turns;
+  // 1. Read session meta + ordered transcript.
+  let session;
   try {
-    turns = await getOrderedTurns(sessionId);
+    session = await getSession(sessionId);
   } catch (err) {
     return serverError(err);
   }
-  if (turns === null) return jsonError("Session not found.", 404);
-  if (turns.length === 0) return jsonError("Session has no turns to respond to.", 400);
+  if (session === null) return jsonError("Session not found.", 404);
+  if (session.turns.length === 0) return jsonError("Session has no turns to respond to.", 400);
 
-  // 2. Call the model. Model failures surface as 502 with a message (not a 500 HTML page).
+  // 2. Derive this turn's round and the context the agent is allowed to see.
+  const newRound = session.turns.filter((t) => t.role === chosen).length + 1;
+  const contextTurns: Turn[] =
+    session.mode === "consensus"
+      ? session.turns.filter((t) => t.round < newRound)
+      : session.turns;
+
+  // 3. Call the model (with the session's response-length preset).
+  //    Model failures surface as 502 with a message (not a 500 HTML page).
   let content: string;
   try {
-    content = await runAgent(chosen, turns);
+    content = await runAgent(chosen, contextTurns, {
+      mode: session.mode,
+      responseLength: session.responseLength,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Model call failed.";
     console.error(`[api/turn] ${chosen} model error:`, err);
     return jsonError(`${chosen} model error: ${message}`, 502);
   }
 
-  // 3. Append the new turn and return it.
+  // 4. Append the new turn and return it.
   try {
-    const turn = await appendTurn(sessionId, chosen, content, modelIdFor(chosen));
+    const turn = await appendTurn({
+      sessionId,
+      role: chosen,
+      content,
+      model: modelIdFor(chosen),
+      round: newRound,
+    });
     return Response.json({ turn }, { status: 201 });
   } catch (err) {
     return serverError(err);

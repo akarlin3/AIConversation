@@ -13,10 +13,12 @@
   --border: #242427;
   --card: #131316;
 
-  /* Role accents (used by the transcript cards starting in CP3) */
+  /* Role accents (used by the transcript cards) */
   --user: #d4d4d8;
   --gemini: #6aa6ff;
   --claude: #e0985a;
+  --judge: #b08cff;
+  --converged: #5ec98a;
 }
 
 @theme inline {
@@ -28,6 +30,8 @@
   --color-user: var(--user);
   --color-gemini: var(--gemini);
   --color-claude: var(--claude);
+  --color-judge: var(--judge);
+  --color-converged: var(--converged);
 
   --font-serif: var(--font-newsreader);
   --font-mono: var(--font-jetbrains-mono);

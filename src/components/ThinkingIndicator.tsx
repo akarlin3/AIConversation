@@ -1,9 +1,10 @@
-import type { Agent } from "@/lib/types";
+type IndicatorRole = "gemini" | "claude" | "judge";
 
-const META = {
+const META: Record<IndicatorRole, { label: string; text: string; accent: string; verb: string }> = {
   gemini: { label: "Gemini", text: "text-gemini", accent: "border-l-gemini", verb: "is thinking" },
-  claude: { label: "Claude", text: "text-claude", accent: "border-l-claude", verb: "is critiquing" },
-} as const;
+  claude: { label: "Claude", text: "text-claude", accent: "border-l-claude", verb: "is thinking" },
+  judge: { label: "Judge", text: "text-judge", accent: "border-l-judge", verb: "is deliberating" },
+};
 
 function Dot({ delay }: { delay: string }) {
   return (
@@ -14,8 +15,8 @@ function Dot({ delay }: { delay: string }) {
   );
 }
 
-export function ThinkingIndicator({ agent }: { agent: Agent }) {
-  const meta = META[agent];
+export function ThinkingIndicator({ role, verb }: { role: IndicatorRole; verb?: string }) {
+  const meta = META[role];
   return (
     <div
       className={`flex items-center gap-3 rounded-lg border-l-4 bg-card px-4 py-3 ring-1 ring-border ${meta.accent}`}
@@ -29,7 +30,7 @@ export function ThinkingIndicator({ agent }: { agent: Agent }) {
         <Dot delay="150ms" />
         <Dot delay="300ms" />
       </span>
-      <span className="font-mono text-xs text-muted">{meta.verb}…</span>
+      <span className="font-mono text-xs text-muted">{verb ?? meta.verb}…</span>
     </div>
   );
 }

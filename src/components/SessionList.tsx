@@ -115,13 +115,24 @@ function SessionItem({
           <span className="flex items-center gap-2">
             <span
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                session.status === "active" ? "bg-gemini" : "bg-muted"
+                session.status === "active"
+                  ? "bg-gemini"
+                  : session.status === "converged"
+                    ? "bg-converged"
+                    : "bg-muted"
               }`}
             />
             <span className="truncate font-mono text-xs text-foreground">{session.title}</span>
           </span>
-          <span className="pl-3.5 font-mono text-[10px] text-muted">
-            {session.status} · {timeAgo(session.updatedAt)}
+          <span className="flex items-center gap-1.5 pl-3.5 font-mono text-[10px] text-muted">
+            <span
+              className={`rounded px-1 py-0.5 uppercase tracking-wider ${
+                session.mode === "consensus" ? "bg-claude/15 text-claude" : "bg-gemini/15 text-gemini"
+              }`}
+            >
+              {session.mode === "consensus" ? "consensus" : "critique"}
+            </span>
+            <span>· {session.status} · {timeAgo(session.updatedAt)}</span>
           </span>
         </button>
       )}

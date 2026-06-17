@@ -1,6 +1,9 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getDb } from "./firebaseAdmin";
 import type {
+  JudgeVerdict,
+  Mode,
+  ResponseLength,
   Role,
   SessionDetail,
   SessionDoc,
@@ -23,6 +26,9 @@ function toSessionMeta(id: string, data: SessionDoc): SessionMeta {
   return {
     id,
     title: data.title,
+    mode: data.mode,
+    responseLength: data.responseLength,
+    maxRounds: data.maxRounds ?? null,
     status: data.status,
     createdAt: tsToIso(data.createdAt),
     updatedAt: tsToIso(data.updatedAt),
@@ -30,36 +36,53 @@ function toSessionMeta(id: string, data: SessionDoc): SessionMeta {
 }
 
 function toTurn(id: string, data: TurnDoc): Turn {
-  return {
+  const turn: Turn = {
     id,
     index: data.index,
+    round: data.round ?? 0,
     role: data.role,
     content: data.content,
     model: data.model ?? null,
     createdAt: tsToIso(data.createdAt),
   };
+  if (data.verdict) turn.verdict = data.verdict;
+  return turn;
 }
 
-/** Create a session and its index-0 `user` turn atomically. Returns the new session id. */
-export async function createSession(initialPrompt: string, title?: string): Promise<string> {
+export interface CreateSessionInput {
+  initialPrompt: string;
+  mode: Mode;
+  responseLength: ResponseLength;
+  maxRounds: number | null;
+  title?: string;
+}
+
+/** Create a session and its index-0 / round-0 `user` turn atomically. Returns the new id. */
+export async function createSession(input: CreateSessionInput): Promise<string> {
   const db = getDb();
   const ref = db.collection(SESSIONS).doc();
   const now = FieldValue.serverTimestamp();
 
   const derivedTitle =
-    title?.trim() || initialPrompt.trim().slice(0, TITLE_FROM_PROMPT_MAX) || "Untitled debate";
+    input.title?.trim() ||
+    input.initialPrompt.trim().slice(0, TITLE_FROM_PROMPT_MAX) ||
+    "Untitled debate";
 
   const batch = db.batch();
   batch.set(ref, {
     title: derivedTitle,
+    mode: input.mode,
+    responseLength: input.responseLength,
+    maxRounds: input.mode === "consensus" ? input.maxRounds : null,
     status: "active" satisfies SessionStatus,
     createdAt: now,
     updatedAt: now,
   });
   batch.set(ref.collection(TURNS).doc(), {
     index: 0,
+    round: 0,
     role: "user" satisfies Role,
-    content: initialPrompt,
+    content: input.initialPrompt,
     model: null,
     createdAt: now,
   });
@@ -88,10 +111,16 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
   return { ...toSessionMeta(doc.id, doc.data() as SessionDoc), turns };
 }
 
-/** Update title and/or status. Bumps updatedAt. Returns fresh meta, or null if not found. */
+export interface SessionUpdates {
+  title?: string;
+  status?: SessionStatus;
+  responseLength?: ResponseLength;
+}
+
+/** Update title / status / responseLength. Bumps updatedAt. Returns fresh meta, or null. */
 export async function updateSession(
   id: string,
-  updates: { title?: string; status?: SessionStatus },
+  updates: SessionUpdates,
 ): Promise<SessionMeta | null> {
   const db = getDb();
   const ref = db.collection(SESSIONS).doc(id);
@@ -101,6 +130,7 @@ export async function updateSession(
   const patch: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
   if (updates.title !== undefined) patch.title = updates.title;
   if (updates.status !== undefined) patch.status = updates.status;
+  if (updates.responseLength !== undefined) patch.responseLength = updates.responseLength;
   await ref.update(patch);
 
   const fresh = await ref.get();
@@ -118,26 +148,17 @@ export async function deleteSession(id: string): Promise<boolean> {
   return true;
 }
 
-/** Ordered turns for a session (ascending index), or null if the session doesn't exist. */
-export async function getOrderedTurns(sessionId: string): Promise<Turn[] | null> {
+/** Append a turn at maxIndex+1 with the given round/verdict and bump updatedAt. */
+export async function appendTurn(args: {
+  sessionId: string;
+  role: Role;
+  content: string;
+  model: string | null;
+  round: number;
+  verdict?: JudgeVerdict;
+}): Promise<Turn> {
   const db = getDb();
-  const ref = db.collection(SESSIONS).doc(sessionId);
-  const doc = await ref.get();
-  if (!doc.exists) return null;
-
-  const snap = await ref.collection(TURNS).orderBy("index", "asc").get();
-  return snap.docs.map((t) => toTurn(t.id, t.data() as TurnDoc));
-}
-
-/** Append a turn at maxIndex+1 and bump the session's updatedAt. Returns the created Turn. */
-export async function appendTurn(
-  sessionId: string,
-  role: Role,
-  content: string,
-  model: string | null,
-): Promise<Turn> {
-  const db = getDb();
-  const sessionRef = db.collection(SESSIONS).doc(sessionId);
+  const sessionRef = db.collection(SESSIONS).doc(args.sessionId);
   const turnsCol = sessionRef.collection(TURNS);
 
   const lastSnap = await turnsCol.orderBy("index", "desc").limit(1).get();
@@ -145,8 +166,18 @@ export async function appendTurn(
 
   const turnRef = turnsCol.doc();
   const now = FieldValue.serverTimestamp();
+  const data: Record<string, unknown> = {
+    index: nextIndex,
+    round: args.round,
+    role: args.role,
+    content: args.content,
+    model: args.model,
+    createdAt: now,
+  };
+  if (args.verdict) data.verdict = args.verdict;
+
   const batch = db.batch();
-  batch.set(turnRef, { index: nextIndex, role, content, model, createdAt: now });
+  batch.set(turnRef, data);
   batch.update(sessionRef, { updatedAt: now });
   await batch.commit();
 

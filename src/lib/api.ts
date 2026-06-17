@@ -1,4 +1,13 @@
-import type { Agent, SessionDetail, SessionMeta, SessionStatus, Turn } from "./types";
+import type {
+  Agent,
+  JudgeVerdict,
+  Mode,
+  ResponseLength,
+  SessionDetail,
+  SessionMeta,
+  SessionStatus,
+  Turn,
+} from "./types";
 
 /**
  * Browser-side helpers for the app's own API routes. These hit same-origin
@@ -15,11 +24,19 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
-export async function createSession(initialPrompt: string, title?: string): Promise<string> {
+export interface CreateSessionArgs {
+  initialPrompt: string;
+  mode: Mode;
+  responseLength: ResponseLength;
+  maxRounds?: number | null;
+  title?: string;
+}
+
+export async function createSession(args: CreateSessionArgs): Promise<string> {
   const res = await fetch("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initialPrompt, title }),
+    body: JSON.stringify(args),
   });
   const { sessionId } = await parse<{ sessionId: string }>(res);
   return sessionId;
@@ -35,9 +52,20 @@ export async function postTurn(sessionId: string, agent: Agent): Promise<Turn> {
   return turn;
 }
 
+export async function postJudge(
+  sessionId: string,
+): Promise<{ verdict: JudgeVerdict; turn: Turn }> {
+  const res = await fetch("/api/judge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
+  return parse<{ verdict: JudgeVerdict; turn: Turn }>(res);
+}
+
 export async function patchSession(
   id: string,
-  updates: { title?: string; status?: SessionStatus },
+  updates: { title?: string; status?: SessionStatus; responseLength?: ResponseLength },
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${id}`, {
     method: "PATCH",
