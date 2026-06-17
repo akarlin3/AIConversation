@@ -29,6 +29,8 @@ export interface CreateSessionArgs {
   mode: Mode;
   responseLength: ResponseLength;
   maxRounds?: number | null;
+  /** Critique mode: which participant answers first. Defaults server-side to "gemini". */
+  starter?: Agent;
   title?: string;
 }
 

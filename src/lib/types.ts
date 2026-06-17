@@ -31,6 +31,11 @@ export interface SessionDoc {
   responseLength: ResponseLength;
   /** Round cap for consensus mode; null for critique (user-gated, uncapped). */
   maxRounds: number | null;
+  /**
+   * Critique mode: which participant answers first (the other becomes the critic).
+   * Irrelevant for consensus (both answer in parallel); defaults to "gemini".
+   */
+  starter: Agent;
   status: SessionStatus;
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -56,6 +61,8 @@ export interface SessionMeta {
   mode: Mode;
   responseLength: ResponseLength;
   maxRounds: number | null;
+  /** Critique mode: which participant answers first. Defaults to "gemini". */
+  starter: Agent;
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;

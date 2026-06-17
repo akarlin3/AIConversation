@@ -64,6 +64,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     content = await runAgent(chosen, contextTurns, {
       mode: session.mode,
       responseLength: session.responseLength,
+      starter: session.starter,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Model call failed.";

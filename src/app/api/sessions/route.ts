@@ -2,18 +2,19 @@ import type { NextRequest } from "next/server";
 import { createSession, listSessions } from "@/lib/sessions";
 import { jsonError, serverError } from "@/lib/http";
 import { MAX_PROMPT_LENGTH } from "@/lib/constants";
-import type { Mode, ResponseLength } from "@/lib/types";
+import type { Agent, Mode, ResponseLength } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MODES: readonly Mode[] = ["critique", "consensus"];
 const LENGTHS: readonly ResponseLength[] = ["brief", "standard", "detailed"];
+const AGENTS: readonly Agent[] = ["gemini", "claude"];
 const MAX_ROUNDS_LIMIT = 20;
 
 /**
  * POST /api/sessions — create from
- * { initialPrompt, mode, responseLength, maxRounds?, title? }.
+ * { initialPrompt, mode, responseLength, maxRounds?, starter?, title? }.
  * Writes the user turn (index 0, round 0). Returns { sessionId }.
  */
 export async function POST(request: NextRequest): Promise<Response> {
@@ -24,11 +25,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     return jsonError("Invalid JSON body.", 400);
   }
 
-  const { initialPrompt, mode, responseLength, maxRounds, title } = (body ?? {}) as {
+  const { initialPrompt, mode, responseLength, maxRounds, starter, title } = (body ?? {}) as {
     initialPrompt?: unknown;
     mode?: unknown;
     responseLength?: unknown;
     maxRounds?: unknown;
+    starter?: unknown;
     title?: unknown;
   };
 
@@ -43,6 +45,10 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
   if (typeof responseLength !== "string" || !LENGTHS.includes(responseLength as ResponseLength)) {
     return jsonError("`responseLength` must be 'brief', 'standard', or 'detailed'.", 400);
+  }
+  // `starter` only matters for critique (who answers first); optional, defaults to gemini.
+  if (starter !== undefined && (typeof starter !== "string" || !AGENTS.includes(starter as Agent))) {
+    return jsonError("`starter` must be 'gemini' or 'claude'.", 400);
   }
   if (title !== undefined && typeof title !== "string") {
     return jsonError("`title` must be a string.", 400);
@@ -68,6 +74,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       mode: mode as Mode,
       responseLength: responseLength as ResponseLength,
       maxRounds: resolvedMaxRounds,
+      starter: (starter as Agent | undefined) ?? "gemini",
       title: typeof title === "string" ? title : undefined,
     });
     return Response.json({ sessionId }, { status: 201 });

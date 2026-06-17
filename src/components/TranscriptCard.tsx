@@ -1,4 +1,4 @@
-import type { Mode, Turn } from "@/lib/types";
+import type { Agent, Mode, Turn } from "@/lib/types";
 
 const ROLE = {
   user: { label: "You", text: "text-user", accent: "border-l-user" },
@@ -7,10 +7,22 @@ const ROLE = {
   judge: { label: "Judge", text: "text-judge", accent: "border-l-judge" },
 } as const;
 
-export function TranscriptCard({ turn, mode }: { turn: Turn; mode: Mode }) {
+export function TranscriptCard({
+  turn,
+  mode,
+  starter,
+}: {
+  turn: Turn;
+  mode: Mode;
+  starter: Agent;
+}) {
   const meta = ROLE[turn.role];
-  const label =
-    turn.role === "claude" && mode === "critique" ? "Claude · critique" : meta.label;
+  // In critique mode the non-starter participant is the critic; tag its turns.
+  const isCritic =
+    mode === "critique" &&
+    (turn.role === "gemini" || turn.role === "claude") &&
+    turn.role !== starter;
+  const label = isCritic ? `${meta.label} · critique` : meta.label;
 
   return (
     <article className={`rounded-lg border-l-4 bg-card ring-1 ring-border ${meta.accent}`}>

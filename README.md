@@ -2,7 +2,7 @@
 
 A structured-debate app with **two modes** over a question you pose:
 
-- **Critique loop** — **Gemini** answers, **Claude** critiques the answer, and *you* decide whether the debate continues. On _Continue_, Gemini responds to the critique, Claude critiques again, and so on (user-gated each round).
+- **Critique loop** — one model answers and the other critiques, with *you* deciding whether the debate continues. You pick **who answers first** (Gemini or Claude) when starting the debate; the other model becomes the critic. On _Continue_, the answerer responds to the critique, the critic critiques again, and so on (user-gated each round).
 - **Consensus** — Gemini and Claude answer the prompt **independently and in parallel** in round 1 (neither sees the other). Each later round, both revise against the full transcript. After every round a separate **judge** (Claude Opus) decides whether they've converged. It auto-loops until converged or `maxRounds`; a **Stop** button halts at any time.
 
 Both modes have a **response-length control** (brief / standard / detailed), editable mid-session. Every debate is saved and resumable.
@@ -10,8 +10,9 @@ Both modes have a **response-length control** (brief / standard / detailed), edi
 - **Stack:** Next.js (App Router) · TypeScript (strict) · Tailwind v4 · dark-mode-only UI (Newsreader for prose, JetBrains Mono for the transcript).
 - **Three model roles:**
   - Gemini participant — `gemini-3.5-flash` (`@google/genai`)
-  - Claude participant (Mode-A critic / Mode-B negotiator) — `claude-sonnet-4-6` (`@anthropic-ai/sdk`)
+  - Claude participant — `claude-sonnet-4-6` (`@anthropic-ai/sdk`)
   - Judge (consensus convergence ruling) — `claude-opus-4-8`
+  - In critique mode either participant can be the answerer or the critic (set per session); in consensus both negotiate.
 - **Persistence:** Firebase Firestore via the **Admin SDK**, used **only inside API routes**.
 
 ---
@@ -83,8 +84,9 @@ When `FIRESTORE_EMULATOR_HOST` is set, `src/lib/firebaseAdmin.ts` initializes wi
 
 ### Data model (Firestore)
 
-- `sessions/{sessionId}` → `{ title, mode: 'critique' | 'consensus', responseLength: 'brief' | 'standard' | 'detailed', maxRounds: number | null, status: 'active' | 'stopped' | 'converged' | 'maxrounds', createdAt, updatedAt }`
+- `sessions/{sessionId}` → `{ title, mode: 'critique' | 'consensus', responseLength: 'brief' | 'standard' | 'detailed', maxRounds: number | null, starter: 'gemini' | 'claude', status: 'active' | 'stopped' | 'converged' | 'maxrounds', createdAt, updatedAt }`
   - `maxRounds` is set only for consensus sessions.
+  - `starter` is the participant that answers first in critique mode (the other critiques); irrelevant for consensus and defaults to `gemini`.
 - `sessions/{sessionId}/turns/{turnId}` → `{ index, round, role: 'user' | 'gemini' | 'claude' | 'judge', content, model, verdict?, createdAt }`
   - `index` is monotonic (global ordering); `round` groups a negotiation cycle (0 = user prompt). Turns are a subcollection to avoid the 1 MB document cap on long debates.
   - `verdict` (judge turns only) is a `JudgeVerdict`: `{ converged, rationale, divergences[], consensusStatement | null }`.
@@ -103,7 +105,7 @@ Each preset maps to (a) an instruction injected into the participant system prom
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/sessions` | Create from `{ initialPrompt, mode, responseLength, maxRounds?, title? }`; writes the index-0 / round-0 `user` turn. |
+| `POST` | `/api/sessions` | Create from `{ initialPrompt, mode, responseLength, maxRounds?, starter?, title? }`; writes the index-0 / round-0 `user` turn. `starter` (`gemini`\|`claude`, default `gemini`) sets who answers first in critique mode. |
 | `GET` | `/api/sessions` | List sessions (newest-updated first). |
 | `GET` | `/api/sessions/[id]` | Session meta + all turns ordered by `index`. |
 | `PATCH` | `/api/sessions/[id]` | Rename / set status / set `responseLength`. |
@@ -115,7 +117,7 @@ Each preset maps to (a) an instruction injected into the participant system prom
 
 ### Prompt construction
 
-Each agent receives a **system prompt** (its role + the length instruction; editable constants in `src/lib/agents.ts`) plus a single user message containing the flattened transcript followed by a trailing instruction:
+Each agent receives a **system prompt** (its role + the length instruction; editable constants in `src/lib/agents.ts`) plus a single user message containing the flattened transcript followed by a trailing instruction. In critique mode the prompts are role-based (answerer vs critic) rather than model-bound, so the `starter`/critic assignment is filled in per call:
 
 ```
 [USER PROMPT]
@@ -134,7 +136,7 @@ Each agent receives a **system prompt** (its role + the length instruction; edit
 
 ### Frontend state machines
 
-- **Critique:** `idle → geminiThinking → claudeThinking → awaitingDecision`, plus `stopped`. Continue re-runs the gemini→claude pair; Stop sets `status=stopped` (read-only, with Reopen).
+- **Critique:** `idle → answererThinking → criticThinking → awaitingDecision`, plus `stopped`. The thinking phases are the per-model `geminiThinking`/`claudeThinking` states, ordered by the session's `starter` (answerer first, critic second). Continue re-runs the answerer→critic pair; Stop sets `status=stopped` (read-only, with Reopen).
 - **Consensus:** `idle → roundRunning (gemini + claude in parallel) → judging (POST /api/judge) → evaluate`:
   - `verdict.converged` → `converged` (renders the `consensusStatement` prominently).
   - else `round === maxRounds` → `maxrounds` (renders the judge's final `consensusStatement` + remaining `divergences`).
